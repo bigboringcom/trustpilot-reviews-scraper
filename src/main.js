@@ -18,10 +18,30 @@ if (!startUrl.includes('trustpilot.com')) {
     startUrl = `https://www.trustpilot.com/review/${domain}`;
 }
 
+const proxyConfiguration = await Actor.createProxyConfiguration({
+    groups: ['RESIDENTIAL'],
+    countryCode: 'US',
+});
+
 const crawler = new CheerioCrawler({
     maxRequestRetries: 3,
     maxConcurrency: 3,
     maxRequestsPerMinute: 30,
+    proxyConfiguration,
+    additionalHttpErrorStatusCodes: [403],
+    preNavigationHooks: [
+        (crawlingContext, gotOptions) => {
+            gotOptions.headers = {
+                ...gotOptions.headers,
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                'Accept-Language': 'en-US,en;q=0.9',
+                'Accept-Encoding': 'gzip, deflate, br',
+                'Connection': 'keep-alive',
+                'Upgrade-Insecure-Requests': '1',
+            };
+        },
+    ],
     async requestHandler({ $, request, enqueueLinks }) {
         if (itemCount >= maxItems) return;
 
