@@ -1,0 +1,16 @@
+{
+  "name": "trustpilot-reviews-scraper",
+  "version": "1.0.0",
+  "description": "Scrape Trustpilot reviews for any company - extract ratings, review text, reviewer info, dates, and company response data.",
+  "main": "src/main.js",
+  "type": "module",
+  "scripts": {
+    "start": "node src/main.js",
+    "test": "echo \"No tests defined yet\""
+  },
+  "dependencies": {
+    "apify": "^3.2.0",
+    "cheerio": "^1.0.0-rc.12",
+    "crawlee": "^3.9.0"
+  }
+}

@@ -1,0 +1,29 @@
+{
+    "title": "Trustpilot Reviews Scraper",
+    "type": "object",
+    "schemaVersion": 1,
+    "properties": {
+        "companyUrl": {
+            "title": "Trustpilot Company URL or Domain",
+            "type": "string",
+            "description": "Trustpilot review page URL (e.g., https://www.trustpilot.com/review/example.com) or just the domain (e.g., example.com).",
+            "editor": "textfield",
+            "prefill": "https://www.trustpilot.com/review/example.com"
+        },
+        "maxItems": {
+            "title": "Max Reviews",
+            "type": "integer",
+            "description": "Maximum number of reviews to extract.",
+            "default": 100,
+            "minimum": 1
+        },
+        "maxRunTimeMinutes": {
+            "title": "Max Run Time (Minutes)",
+            "type": "integer",
+            "description": "Gracefully kills the scraper after this many minutes to prevent runaway costs.",
+            "default": 5,
+            "minimum": 1
+        }
+    },
+    "required": ["companyUrl"]
+}

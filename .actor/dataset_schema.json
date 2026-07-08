@@ -1,0 +1,33 @@
+{
+  "actorSpecification": 1,
+  "fields": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "companyName": { "title": "Company", "type": "string", "description": "Company name on Trustpilot" },
+      "companyUrl": { "title": "Company URL", "type": "string", "description": "Trustpilot company page URL" },
+      "reviewerName": { "title": "Reviewer", "type": "string", "description": "Reviewer display name" },
+      "reviewerLocation": { "title": "Location", "type": "string", "description": "Reviewer location/country" },
+      "rating": { "title": "Rating", "type": "integer", "description": "Star rating (1-5)" },
+      "title": { "title": "Review Title", "type": "string", "description": "Review headline" },
+      "body": { "title": "Review Body", "type": "string", "description": "Full review text" },
+      "date": { "title": "Date", "type": "string", "description": "Review date" },
+      "isVerified": { "title": "Verified", "type": "boolean", "description": "Whether the review is verified" },
+      "hasCompanyReply": { "title": "Company Reply", "type": "boolean", "description": "Whether the company replied" },
+      "companyOverallRating": { "title": "Overall Rating", "type": "string", "description": "Company overall Trustpilot score" },
+      "extractedAt": { "title": "Extracted At", "type": "string", "description": "ISO timestamp" }
+    },
+    "additionalProperties": true
+  },
+  "views": {
+    "overview": {
+      "title": "Overview",
+      "transformation": {
+        "fields": ["companyName", "reviewerName", "rating", "title", "body", "date", "isVerified"]
+      },
+      "display": {
+        "component": "table"
+      }
+    }
+  }
+}

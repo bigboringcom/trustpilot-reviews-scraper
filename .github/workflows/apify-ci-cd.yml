@@ -1,0 +1,40 @@
+name: Apify CI/CD
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+
+    - name: Set up Node.js
+      uses: actions/setup-node@v3
+      with:
+        node-version: '18'
+
+    - name: Install dependencies
+      run: npm install
+
+    - name: Run Linters/Tests
+      run: npm test || echo "No tests defined yet"
+
+    - name: Install Apify CLI
+      run: npm install -g apify-cli
+
+    - name: Authenticate Apify CLI
+      env:
+        APIFY_TOKEN: ${{ secrets.APIFY_TOKEN }}
+      run: apify login --token $APIFY_TOKEN
+
+    - name: Push to Apify (if on main)
+      if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+      env:
+        APIFY_TOKEN: ${{ secrets.APIFY_TOKEN }}
+      run: apify push

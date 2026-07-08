@@ -1,0 +1,12 @@
+{
+    "actorOutputSchemaVersion": 1,
+    "title": "Output schema of the scraper",
+    "properties": {
+        "results": {
+            "type": "string",
+            "title": "Extracted Data",
+            "description": "Extracted Trustpilot reviews with ratings, text, and reviewer information.",
+            "template": "{{links.apiDefaultDatasetUrl}}/items"
+        }
+    }
+}
