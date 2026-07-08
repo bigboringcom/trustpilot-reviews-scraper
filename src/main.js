@@ -1,4 +1,4 @@
-import { CheerioCrawler, log } from 'crawlee';
+import { PlaywrightCrawler, log } from 'crawlee';
 import { Actor } from 'apify';
 
 await Actor.init();
@@ -13,7 +13,6 @@ let itemCount = 0;
 // Normalize the URL to ensure it's a valid Trustpilot review page
 let startUrl = companyUrl;
 if (!startUrl.includes('trustpilot.com')) {
-    // If user just passed a domain, construct the Trustpilot URL
     const domain = startUrl.replace(/^https?:\/\//, '').replace(/\/$/, '');
     startUrl = `https://www.trustpilot.com/review/${domain}`;
 }
@@ -23,109 +22,95 @@ const proxyConfiguration = await Actor.createProxyConfiguration({
     countryCode: 'US',
 });
 
-const crawler = new CheerioCrawler({
-    maxRequestRetries: 5,
-    maxConcurrency: 2,
-    maxRequestsPerMinute: 15,
+const crawler = new PlaywrightCrawler({
+    maxRequestRetries: 3,
+    maxConcurrency: 1,
+    maxRequestsPerMinute: 10,
     proxyConfiguration,
-    ignoreSslErrors: true,
-    preNavigationHooks: [
-        (crawlingContext, gotOptions) => {
-            gotOptions.headers = {
-                ...gotOptions.headers,
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
-                'Accept-Language': 'en-US,en;q=0.9',
-                'Accept-Encoding': 'gzip, deflate, br',
-                'Cache-Control': 'max-age=0',
-                'Sec-Ch-Ua': '"Chromium";v="126", "Google Chrome";v="126", "Not=A?Brand";v="8"',
-                'Sec-Ch-Ua-Mobile': '?0',
-                'Sec-Ch-Ua-Platform': '"Windows"',
-                'Sec-Fetch-Dest': 'document',
-                'Sec-Fetch-Mode': 'navigate',
-                'Sec-Fetch-Site': 'none',
-                'Sec-Fetch-User': '?1',
-                'Upgrade-Insecure-Requests': '1',
-            };
-        },
-    ],
-    async requestHandler({ $, request, enqueueLinks }) {
+    headless: true,
+    navigationTimeoutSecs: 60,
+    requestHandlerTimeoutSecs: 120,
+    async requestHandler({ page, request }) {
         if (itemCount >= maxItems) return;
 
         log.info(`Processing: ${request.url}`);
 
-        // Extract company info from the page header
-        const companyName = $('[class*="title_displayName"], h1[class*="title"], [data-company-name]').first().text().trim() ||
-            $('meta[property="og:title"]').attr('content')?.split('|')?.[0]?.trim() || '';
-        const overallRating = $('[class*="overallRating"], [data-rating-typography]').first().text().trim() || '';
-        const totalReviews = $('[class*="numberOfReviews"], [class*="reviewCount"]').first().text().trim() || '';
-
-        // Extract individual reviews
-        const reviewCards = $('[class*="review-card"], article[class*="paper"], [data-review-id], [class*="styles_cardWrapper"]');
-
-        reviewCards.each((i, el) => {
-            if (itemCount >= maxItems) return false;
-
-            // Star rating
-            const ratingEl = $(el).find('[class*="star-rating"], img[alt*="star"], [data-service-review-rating]');
-            let rating = ratingEl.attr('data-service-review-rating') || '';
-            if (!rating) {
-                const altText = ratingEl.find('img').attr('alt') || ratingEl.attr('alt') || '';
-                const ratingMatch = altText.match(/(\d)/);
-                if (ratingMatch) rating = ratingMatch[1];
-            }
-            if (!rating) {
-                // Try counting filled stars
-                const filledStars = $(el).find('[class*="star--filled"], [class*="StarRating"] img').length;
-                if (filledStars > 0) rating = String(filledStars);
-            }
-
-            // Review title and body
-            const title = $(el).find('[class*="title"], h2, [data-service-review-title-typography]').first().text().trim();
-            const body = $(el).find('[class*="content"], [class*="text"], p[class*="styles_reviewContent"], [data-service-review-text-typography]').first().text().trim();
-
-            // Reviewer info
-            const reviewerName = $(el).find('[class*="consumer-information"] a, [class*="displayName"], [data-consumer-name-typography]').first().text().trim();
-            const reviewerLocation = $(el).find('[class*="consumerLocation"], [class*="location"], [data-consumer-country-typography]').first().text().trim();
-
-            // Date
-            const dateEl = $(el).find('time, [class*="date"], [datetime]');
-            const reviewDate = dateEl.attr('datetime') || dateEl.text().trim() || '';
-
-            // Reply from company
-            const hasReply = $(el).find('[class*="reply"], [class*="businessReply"]').length > 0;
-
-            // Verification
-            const isVerified = $(el).find('[class*="verified"], [class*="Verified"]').length > 0;
-
-            if (title || body || rating) {
-                const record = {
-                    companyName: companyName || '',
-                    companyUrl: request.url.split('?')[0],
-                    reviewerName: reviewerName || 'Anonymous',
-                    reviewerLocation: reviewerLocation || '',
-                    rating: rating ? parseInt(rating) : null,
-                    title: title || '',
-                    body: body || '',
-                    date: reviewDate || '',
-                    isVerified: isVerified,
-                    hasCompanyReply: hasReply,
-                    companyOverallRating: overallRating || '',
-                    companyTotalReviews: totalReviews || '',
-                    sourceUrl: request.url,
-                    extractedAt: new Date().toISOString()
-                };
-
-                Actor.pushData(record);
-                itemCount++;
-            }
+        // Wait for reviews to render
+        await page.waitForSelector('article, [class*="review-card"], [data-service-review-rating]', { timeout: 15000 }).catch(() => {
+            log.warning('Review elements not found, page may be blocked or empty');
         });
 
-        log.info(`✅ Extracted ${reviewCards.length} reviews from page (total: ${itemCount})`);
+        // Extract company info
+        const companyName = await page.$eval('h1, [class*="title_displayName"]', el => el.textContent.trim()).catch(() => '');
+        const overallRating = await page.$eval('[class*="overallRating"], [data-rating-typography]', el => el.textContent.trim()).catch(() => '');
+        const totalReviews = await page.$eval('[class*="numberOfReviews"], [class*="reviewCount"]', el => el.textContent.trim()).catch(() => '');
 
-        // Handle pagination - follow "next page" links
+        // Extract reviews
+        const reviews = await page.$$eval('article, [class*="paper_paper"], [data-review-id]', (elements) => {
+            return elements.map(el => {
+                // Rating
+                const ratingEl = el.querySelector('[data-service-review-rating], img[alt*="star"], [class*="star-rating"]');
+                let rating = ratingEl?.getAttribute('data-service-review-rating') || '';
+                if (!rating) {
+                    const alt = ratingEl?.querySelector('img')?.getAttribute('alt') || ratingEl?.getAttribute('alt') || '';
+                    const match = alt.match(/(\d)/);
+                    if (match) rating = match[1];
+                }
+
+                // Title and body
+                const title = el.querySelector('h2, [data-service-review-title-typography], [class*="title"]')?.textContent?.trim() || '';
+                const body = el.querySelector('[data-service-review-text-typography], [class*="reviewContent"], p[class*="text"]')?.textContent?.trim() || '';
+
+                // Reviewer
+                const reviewerName = el.querySelector('[data-consumer-name-typography], [class*="displayName"], [class*="consumer-information"] a')?.textContent?.trim() || '';
+                const reviewerLocation = el.querySelector('[data-consumer-country-typography], [class*="consumerLocation"]')?.textContent?.trim() || '';
+
+                // Date
+                const dateEl = el.querySelector('time, [datetime]');
+                const date = dateEl?.getAttribute('datetime') || dateEl?.textContent?.trim() || '';
+
+                // Reply and verification
+                const hasReply = !!el.querySelector('[class*="reply"], [class*="businessReply"]');
+                const isVerified = !!el.querySelector('[class*="verified"], [class*="Verified"]');
+
+                return { rating, title, body, reviewerName, reviewerLocation, date, hasReply, isVerified };
+            });
+        }).catch(() => []);
+
+        for (const review of reviews) {
+            if (itemCount >= maxItems) break;
+            if (!review.title && !review.body && !review.rating) continue;
+
+            const record = {
+                companyName: companyName || '',
+                companyUrl: request.url.split('?')[0],
+                reviewerName: review.reviewerName || 'Anonymous',
+                reviewerLocation: review.reviewerLocation || '',
+                rating: review.rating ? parseInt(review.rating) : null,
+                title: review.title || '',
+                body: review.body || '',
+                date: review.date || '',
+                isVerified: review.isVerified,
+                hasCompanyReply: review.hasReply,
+                companyOverallRating: overallRating || '',
+                companyTotalReviews: totalReviews || '',
+                sourceUrl: request.url,
+                extractedAt: new Date().toISOString()
+            };
+
+            await Actor.pushData(record);
+            itemCount++;
+        }
+
+        log.info(`✅ Extracted ${reviews.length} reviews from page (total: ${itemCount})`);
+
+        // Pagination
         if (itemCount < maxItems) {
-            const nextPageLink = $('a[name="pagination-button-next"], a[href*="page="], [class*="pagination"] a[rel="next"]').attr('href');
+            const nextPageLink = await page.$eval(
+                'a[name="pagination-button-next"], a[href*="page="][rel="next"]',
+                el => el.getAttribute('href')
+            ).catch(() => null);
+
             if (nextPageLink) {
                 const nextUrl = nextPageLink.startsWith('http') ? nextPageLink : `https://www.trustpilot.com${nextPageLink}`;
                 await crawler.addRequests([{ url: nextUrl }]);
