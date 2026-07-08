@@ -5,7 +5,7 @@
     "description": "Scrape Trustpilot reviews for any company. Extract star ratings, review text, reviewer names, locations, dates, verification status, and company replies.",
     "version": "1.0",
     "meta": {
-        "templateId": "project-playwright-crawler"
+        "templateId": "project-cheerio-crawler"
     },
     "dockerfile": "./Dockerfile",
     "pricing": {

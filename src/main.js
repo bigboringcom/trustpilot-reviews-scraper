@@ -1,4 +1,4 @@
-import { PlaywrightCrawler, log } from 'crawlee';
+import { CheerioCrawler, log } from 'crawlee';
 import { Actor } from 'apify';
 
 await Actor.init();
@@ -9,12 +9,14 @@ const maxItems = input.maxItems || 100;
 const maxRunTimeMinutes = input.maxRunTimeMinutes || 5;
 
 let itemCount = 0;
+let buildId = null;
 
-// Normalize the URL to ensure it's a valid Trustpilot review page
-let startUrl = companyUrl;
-if (!startUrl.includes('trustpilot.com')) {
-    const domain = startUrl.replace(/^https?:\/\//, '').replace(/\/$/, '');
-    startUrl = `https://www.trustpilot.com/review/${domain}`;
+// Normalize the URL to get the company domain
+let companyDomain = companyUrl;
+if (companyDomain.includes('trustpilot.com/review/')) {
+    companyDomain = companyDomain.split('trustpilot.com/review/')[1].split('?')[0].replace(/\/$/, '');
+} else {
+    companyDomain = companyDomain.replace(/^https?:\/\//, '').replace(/\/$/, '');
 }
 
 const proxyConfiguration = await Actor.createProxyConfiguration({
@@ -22,99 +24,151 @@ const proxyConfiguration = await Actor.createProxyConfiguration({
     countryCode: 'US',
 });
 
-const crawler = new PlaywrightCrawler({
-    maxRequestRetries: 3,
-    maxConcurrency: 1,
-    maxRequestsPerMinute: 10,
+const crawler = new CheerioCrawler({
+    maxRequestRetries: 5,
+    maxConcurrency: 2,
+    maxRequestsPerMinute: 15,
     proxyConfiguration,
-    headless: true,
-    navigationTimeoutSecs: 60,
-    requestHandlerTimeoutSecs: 120,
-    async requestHandler({ page, request }) {
+    preNavigationHooks: [
+        (crawlingContext, gotOptions) => {
+            gotOptions.headers = {
+                ...gotOptions.headers,
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                'Accept-Language': 'en-US,en;q=0.9',
+                'Accept-Encoding': 'gzip, deflate, br',
+                'Referer': 'https://www.google.com/',
+                'DNT': '1',
+            };
+        },
+    ],
+    async requestHandler({ $, request, body }) {
         if (itemCount >= maxItems) return;
 
         log.info(`Processing: ${request.url}`);
 
-        // Wait for reviews to render
-        await page.waitForSelector('article, [class*="review-card"], [data-service-review-rating]', { timeout: 15000 }).catch(() => {
-            log.warning('Review elements not found, page may be blocked or empty');
-        });
-
-        // Extract company info
-        const companyName = await page.$eval('h1, [class*="title_displayName"]', el => el.textContent.trim()).catch(() => '');
-        const overallRating = await page.$eval('[class*="overallRating"], [data-rating-typography]', el => el.textContent.trim()).catch(() => '');
-        const totalReviews = await page.$eval('[class*="numberOfReviews"], [class*="reviewCount"]', el => el.textContent.trim()).catch(() => '');
-
-        // Extract reviews
-        const reviews = await page.$$eval('article, [class*="paper_paper"], [data-review-id]', (elements) => {
-            return elements.map(el => {
-                // Rating
-                const ratingEl = el.querySelector('[data-service-review-rating], img[alt*="star"], [class*="star-rating"]');
-                let rating = ratingEl?.getAttribute('data-service-review-rating') || '';
-                if (!rating) {
-                    const alt = ratingEl?.querySelector('img')?.getAttribute('alt') || ratingEl?.getAttribute('alt') || '';
-                    const match = alt.match(/(\d)/);
-                    if (match) rating = match[1];
+        // ─── METHOD 1: Extract __NEXT_DATA__ JSON blob ───
+        const nextDataScript = $('script#__NEXT_DATA__').html();
+        
+        if (nextDataScript) {
+            try {
+                const nextData = JSON.parse(nextDataScript);
+                
+                // Get buildId for API-based pagination
+                if (!buildId && nextData.buildId) {
+                    buildId = nextData.buildId;
+                    log.info(`Found buildId: ${buildId}`);
                 }
 
-                // Title and body
-                const title = el.querySelector('h2, [data-service-review-title-typography], [class*="title"]')?.textContent?.trim() || '';
-                const body = el.querySelector('[data-service-review-text-typography], [class*="reviewContent"], p[class*="text"]')?.textContent?.trim() || '';
+                const pageProps = nextData?.props?.pageProps || {};
+                const reviews = pageProps.reviews || [];
+                const businessUnit = pageProps.businessUnit || {};
+                const companyName = businessUnit.displayName || businessUnit.identifyingName || companyDomain;
+                const overallRating = businessUnit.trustScore || '';
+                const totalReviews = businessUnit.numberOfReviews || '';
 
-                // Reviewer
-                const reviewerName = el.querySelector('[data-consumer-name-typography], [class*="displayName"], [class*="consumer-information"] a')?.textContent?.trim() || '';
-                const reviewerLocation = el.querySelector('[data-consumer-country-typography], [class*="consumerLocation"]')?.textContent?.trim() || '';
+                for (const review of reviews) {
+                    if (itemCount >= maxItems) break;
 
-                // Date
-                const dateEl = el.querySelector('time, [datetime]');
-                const date = dateEl?.getAttribute('datetime') || dateEl?.textContent?.trim() || '';
+                    const record = {
+                        companyName,
+                        companyUrl: `https://www.trustpilot.com/review/${companyDomain}`,
+                        reviewerName: review.consumer?.displayName || 'Anonymous',
+                        reviewerLocation: review.consumer?.countryCode || '',
+                        rating: review.rating || null,
+                        title: review.title || '',
+                        body: review.text || '',
+                        date: review.dates?.publishedDate || '',
+                        experienceDate: review.dates?.experiencedDate || '',
+                        isVerified: review.labels?.verification?.isVerified || false,
+                        hasCompanyReply: !!(review.reply),
+                        companyOverallRating: String(overallRating),
+                        companyTotalReviews: String(totalReviews),
+                        reviewId: review.id || '',
+                        sourceUrl: request.url,
+                        extractedAt: new Date().toISOString()
+                    };
 
-                // Reply and verification
-                const hasReply = !!el.querySelector('[class*="reply"], [class*="businessReply"]');
-                const isVerified = !!el.querySelector('[class*="verified"], [class*="Verified"]');
+                    await Actor.pushData(record);
+                    itemCount++;
+                }
 
-                return { rating, title, body, reviewerName, reviewerLocation, date, hasReply, isVerified };
-            });
-        }).catch(() => []);
+                log.info(`✅ Extracted ${reviews.length} reviews via __NEXT_DATA__ (total: ${itemCount})`);
 
-        for (const review of reviews) {
-            if (itemCount >= maxItems) break;
-            if (!review.title && !review.body && !review.rating) continue;
+                // ─── PAGINATION: Use _next/data API if we have buildId ───
+                if (itemCount < maxItems && buildId) {
+                    const pagination = pageProps.filters?.pagination || {};
+                    const currentPage = pagination.currentPage || 1;
+                    const totalPages = pagination.totalPages || 1;
 
-            const record = {
-                companyName: companyName || '',
-                companyUrl: request.url.split('?')[0],
-                reviewerName: review.reviewerName || 'Anonymous',
-                reviewerLocation: review.reviewerLocation || '',
-                rating: review.rating ? parseInt(review.rating) : null,
-                title: review.title || '',
-                body: review.body || '',
-                date: review.date || '',
-                isVerified: review.isVerified,
-                hasCompanyReply: review.hasReply,
-                companyOverallRating: overallRating || '',
-                companyTotalReviews: totalReviews || '',
-                sourceUrl: request.url,
-                extractedAt: new Date().toISOString()
-            };
-
-            await Actor.pushData(record);
-            itemCount++;
+                    if (currentPage < totalPages) {
+                        const nextPage = currentPage + 1;
+                        const apiUrl = `https://www.trustpilot.com/_next/data/${buildId}/review/${companyDomain}.json?businessUnit=${companyDomain}&page=${nextPage}&sort=recency`;
+                        await crawler.addRequests([{ url: apiUrl, userData: { isApi: true } }]);
+                    }
+                }
+            } catch (e) {
+                log.warning(`Failed to parse __NEXT_DATA__: ${e.message}`);
+            }
         }
 
-        log.info(`✅ Extracted ${reviews.length} reviews from page (total: ${itemCount})`);
+        // ─── METHOD 2: Handle _next/data JSON API responses ───
+        if (request.userData?.isApi || request.url.includes('/_next/data/')) {
+            try {
+                const jsonData = JSON.parse(body);
+                const pageProps = jsonData?.pageProps || {};
+                const reviews = pageProps.reviews || [];
+                const businessUnit = pageProps.businessUnit || {};
+                const companyName = businessUnit.displayName || companyDomain;
 
-        // Pagination
-        if (itemCount < maxItems) {
-            const nextPageLink = await page.$eval(
-                'a[name="pagination-button-next"], a[href*="page="][rel="next"]',
-                el => el.getAttribute('href')
-            ).catch(() => null);
+                for (const review of reviews) {
+                    if (itemCount >= maxItems) break;
 
-            if (nextPageLink) {
-                const nextUrl = nextPageLink.startsWith('http') ? nextPageLink : `https://www.trustpilot.com${nextPageLink}`;
-                await crawler.addRequests([{ url: nextUrl }]);
+                    const record = {
+                        companyName,
+                        companyUrl: `https://www.trustpilot.com/review/${companyDomain}`,
+                        reviewerName: review.consumer?.displayName || 'Anonymous',
+                        reviewerLocation: review.consumer?.countryCode || '',
+                        rating: review.rating || null,
+                        title: review.title || '',
+                        body: review.text || '',
+                        date: review.dates?.publishedDate || '',
+                        experienceDate: review.dates?.experiencedDate || '',
+                        isVerified: review.labels?.verification?.isVerified || false,
+                        hasCompanyReply: !!(review.reply),
+                        companyOverallRating: String(businessUnit.trustScore || ''),
+                        companyTotalReviews: String(businessUnit.numberOfReviews || ''),
+                        reviewId: review.id || '',
+                        sourceUrl: request.url,
+                        extractedAt: new Date().toISOString()
+                    };
+
+                    await Actor.pushData(record);
+                    itemCount++;
+                }
+
+                log.info(`✅ Extracted ${reviews.length} reviews via API (total: ${itemCount})`);
+
+                // Continue pagination
+                if (itemCount < maxItems) {
+                    const pagination = pageProps.filters?.pagination || {};
+                    const currentPage = pagination.currentPage || 1;
+                    const totalPages = pagination.totalPages || 1;
+
+                    if (currentPage < totalPages) {
+                        const nextPage = currentPage + 1;
+                        const apiUrl = `https://www.trustpilot.com/_next/data/${buildId}/review/${companyDomain}.json?businessUnit=${companyDomain}&page=${nextPage}&sort=recency`;
+                        await crawler.addRequests([{ url: apiUrl, userData: { isApi: true } }]);
+                    }
+                }
+            } catch (e) {
+                log.warning(`Failed to parse API JSON: ${e.message}`);
             }
+        }
+
+        // ─── METHOD 3: Fallback HTML parsing if __NEXT_DATA__ is not available ───
+        if (!nextDataScript && !request.userData?.isApi) {
+            log.warning(`No __NEXT_DATA__ found. Page might be blocked. Status may be 403.`);
         }
     }
 });
@@ -125,7 +179,8 @@ const killTimer = setTimeout(() => {
     crawler.teardown();
 }, maxRunTimeMinutes * 60 * 1000);
 
-log.info(`🚀 Trustpilot Reviews Scraper starting (url: ${startUrl}, maxItems: ${maxItems})`);
+const startUrl = `https://www.trustpilot.com/review/${companyDomain}`;
+log.info(`🚀 Trustpilot Reviews Scraper starting (company: ${companyDomain}, maxItems: ${maxItems})`);
 await crawler.run([startUrl]);
 
 clearTimeout(killTimer);
